@@ -618,20 +618,19 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
   }
 
 #if defined(ROCKSDB_IOURING_PRESENT)
-  struct io_uring* iu = nullptr;
-  if (thread_local_io_urings_) {
-    iu = static_cast<struct io_uring*>(thread_local_io_urings_->Get());
-    if (iu == nullptr) {
-      iu = CreateIOUring();
-      if (iu != nullptr) {
-        thread_local_io_urings_->Reset(iu);
-      }
+  struct io_uring* iu = global_uring;
+  if (iu == nullptr) {
+    global_uring = CreateIOUring();
+    if (global_uring == nullptr) {
+      printf("create global uring failed.\n");
     }
+    iu = global_uring;
   }
 
   // Init failed, platform doesn't support io_uring. Fall back to
   // serialized reads
   if (iu == nullptr) {
+    printf("uring init failed, use serialized reads\n");
     return FSRandomAccessFile::MultiRead(reqs, num_reqs, options, dbg);
   }
 

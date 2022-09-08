@@ -245,6 +245,8 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
   );
   virtual ~PosixRandomAccessFile();
 
+  struct io_uring* global_uring = nullptr;
+
   virtual IOStatus Read(uint64_t offset, size_t n, const IOOptions& opts,
                         Slice* result, char* scratch,
                         IODebugContext* dbg) const override;
