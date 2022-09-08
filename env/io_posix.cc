@@ -609,6 +609,8 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
                                           size_t num_reqs,
                                           const IOOptions& options,
                                           IODebugContext* dbg) {
+  printf("use MultiRead\n");
+
   if (use_direct_io()) {
     for (size_t i = 0; i < num_reqs; i++) {
       assert(IsSectorAligned(reqs[i].offset, GetRequiredBufferAlignment()));
@@ -620,20 +622,26 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
 #if defined(ROCKSDB_IOURING_PRESENT)
   struct io_uring* iu = nullptr;
   if (thread_local_io_urings_) {
+    printf("has thread_local_io_urings_\n");
     iu = static_cast<struct io_uring*>(thread_local_io_urings_->Get());
     if (iu == nullptr) {
+      printf("iu == nullptr, createIOUring\n");
       iu = CreateIOUring();
       if (iu != nullptr) {
         thread_local_io_urings_->Reset(iu);
       }
     }
+  } else {
+    printf("no thread_local_io_urings_\n");
   }
 
   // Init failed, platform doesn't support io_uring. Fall back to
   // serialized reads
   if (iu == nullptr) {
+    printf("uring init failed, use serialized reads\n");
     return FSRandomAccessFile::MultiRead(reqs, num_reqs, options, dbg);
   }
+  printf("use uring\n");
 
   IOStatus ios = IOStatus::OK();
 
@@ -729,6 +737,7 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
       }
 
       req_wrap = static_cast<WrappedReadRequest*>(io_uring_cqe_get_data(cqe));
+      printf("get data from uring\n");
       // Reset cqe data to catch any stray reuse of it
       static_cast<struct io_uring_cqe*>(cqe)->user_data = 0xd5d5d5d5d5d5d5d5;
       // Check that we got a valid unique cqe data
