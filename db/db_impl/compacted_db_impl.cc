@@ -49,7 +49,8 @@ Status CompactedDBImpl::Get(const ReadOptions& options, ColumnFamilyHandle*,
                          GetContext::kNotFound, key, value, nullptr, nullptr,
                          nullptr, true, nullptr, nullptr);
   LookupKey lkey(key, kMaxSequenceNumber);
-  Status s = files_.files[FindFile(key)].fd.table_reader->Get(
+  auto file_index = FindFile(key);
+  Status s = files_.files[file_index].fd.table_reader->Get(
       options, lkey.internal_key(), &get_context, nullptr);
   if (!s.ok() && !s.IsNotFound()) {
     return s;
