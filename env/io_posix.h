@@ -265,6 +265,7 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
   virtual size_t GetRequiredBufferAlignment() const override {
     return logical_sector_size_;
   }
+  int GetFD() const { return fd_; }
   // EXPERIMENTAL
   virtual IOStatus ReadAsync(
       FSReadRequest& req, const IOOptions& opts,
