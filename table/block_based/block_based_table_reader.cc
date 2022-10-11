@@ -24,6 +24,7 @@
 #include "db/compaction/compaction_picker.h"
 #include "db/dbformat.h"
 #include "db/pinned_iterators_manager.h"
+#include "env/io_posix.h"
 #include "file/file_prefetch_buffer.h"
 #include "file/file_util.h"
 #include "file/random_access_file_reader.h"
@@ -69,6 +70,7 @@
 #include "table/sst_file_writer_collectors.h"
 #include "table/two_level_iterator.h"
 #include "test_util/sync_point.h"
+#include "util/aligned_buffer.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
 #include "util/stop_watch.h"
@@ -2131,17 +2133,76 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
   iiter->Seek(key);
   IndexValue v = iiter->value();
 
-  BlockCacheLookupContext lookup_data_block_context{
-      TableReaderCaller::kUserGet, tracing_get_id,
-      /*get_from_user_specified_snapshot=*/read_options.snapshot != nullptr};
-  // bool does_referenced_key_exist = false;
+  // read to Slice
+  auto f = dynamic_cast<PosixRandomAccessFile*>(rep_->file->file());
+  int fd_;
+  if (f != nullptr) {
+    fd_ = f->GetFD();
+  }
+
+  auto offset = v.handle.offset();
+  auto block_size_ = v.handle.size();
+  auto block_size_with_trailer_ =
+      v.handle.size() + rep_->footer.GetBlockTrailerSize();
+  auto alignment = f->GetRequiredBufferAlignment();
+  auto aligned_offset =
+      TruncateToPageBoundary(alignment, static_cast<size_t>(offset));
+  size_t offset_advance = static_cast<size_t>(offset) - aligned_offset;
+  size_t read_size =
+      Roundup(static_cast<size_t>(offset + block_size_with_trailer_),
+              alignment) -
+      aligned_offset;
+  AlignedBuffer buf;
+  buf.Alignment(alignment);
+  buf.AllocateNewBuffer(read_size);
+
+  IOStatus io_s;
+  ssize_t r = -1;
+  size_t left = read_size;
+  r = pread(fd_, buf.Destination(), read_size, aligned_offset);
+  buf.Size(r);
+
+  if (r < 0) {
+    // An error: return a non-ok status
+    perror("IO");
+    io_s = IOError("While pread offset " + std::to_string(offset) + " len " +
+                       std::to_string(block_size_with_trailer_),
+                   "filename", errno);
+  }
+
+  size_t res_len =
+      std::min(buf.CurrentSize() - offset_advance, block_size_with_trailer_);
+  assert(res_len == block_size_with_trailer_);
+  std::unique_ptr<char[]> buffer(new char[block_size_with_trailer_]);
+  char* ptr = buffer.get();
+  buf.Read(ptr, offset_advance, res_len);
+
+  Slice result = Slice(ptr, (r < 0) ? 0 : block_size_with_trailer_ - left);
+  (void)result;
+
+  auto contents_ = BlockContents(std::move(buffer), block_size_);
+#ifndef NDEBUG
+  contents_.is_raw_block = true;
+#endif
+
+  std::unique_ptr<Block> block_;
+  block_.reset(BlocklikeTraits<Block>::Create(
+      std::move(contents_), rep_->table_options.read_amp_bytes_per_bit,
+      rep_->ioptions.stats, rep_->blocks_definitely_zstd_compressed,
+      rep_->table_options.filter_policy.get()));
+
+  CachableEntry<Block> block_entry_;
+  block_entry_.SetOwnedValue(block_.release());
+
   DataBlockIter biter;
-  // uint64_t referenced_data_size = 0;
-  Status tmp_status;
-  NewDataBlockIterator<DataBlockIter>(
-      read_options, v.handle, &biter, BlockType::kData, get_context,
-      &lookup_data_block_context, /*prefetch_buffer=*/nullptr,
-      /*for_compaction=*/false, /*async_read=*/false, tmp_status);
+  const bool block_contents_pinned =
+      block_entry_.IsCached() ||
+      (!block_entry_.GetValue()->own_bytes() && rep_->immortal_table);
+  DataBlockIter* iter = InitBlockIterator<DataBlockIter>(
+      rep_, block_entry_.GetValue(), BlockType::kData, &biter,
+      block_contents_pinned);
+  assert(&biter == iter);
+  block_entry_.TransferTo(&biter);
 
   bool may_exist = biter.SeekForGet(key);
   ParsedInternalKey parsed_key;
