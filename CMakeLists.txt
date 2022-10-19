@@ -819,6 +819,7 @@ set(SOURCES
         util/threadpool_imp.cc
         util/xxhash.cc
         utilities/agg_merge/agg_merge.cc
+        utilities/async_reader/async_file_reader.cc
         utilities/backup/backup_engine.cc
         utilities/blob_db/blob_compaction_filter.cc
         utilities/blob_db/blob_db.cc
