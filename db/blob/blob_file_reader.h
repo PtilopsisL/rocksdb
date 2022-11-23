@@ -60,6 +60,8 @@ class BlobFileReader {
 
   uint64_t GetFileSize() const { return file_size_; }
 
+  int GetFD() const { return file_reader_->GetFD(); }
+
  private:
   BlobFileReader(std::unique_ptr<RandomAccessFileReader>&& file_reader,
                  uint64_t file_size, CompressionType compression_type,

@@ -13,6 +13,7 @@
 #include <string>
 
 #include "env/file_system_tracer.h"
+#include "env/io_posix.h"
 #include "port/port.h"
 #include "rocksdb/file_system.h"
 #include "rocksdb/listener.h"
@@ -202,6 +203,15 @@ class RandomAccessFileReader {
   FSRandomAccessFile* file() { return file_.get(); }
 
   const std::string& file_name() const { return file_name_; }
+
+  int GetFD() const {
+    auto random_access_file = dynamic_cast<PosixRandomAccessFile*>(file_.get());
+    if (random_access_file != nullptr) {
+      return random_access_file->GetFD();
+    } else {
+      return -1;
+    }
+  }
 
   bool use_direct_io() const { return file_->use_direct_io(); }
 

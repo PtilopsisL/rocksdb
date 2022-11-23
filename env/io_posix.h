@@ -310,6 +310,7 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
   virtual void Hint(AccessPattern pattern) override;
   virtual IOStatus InvalidateCache(size_t offset, size_t length) override;
   virtual bool use_direct_io() const override { return use_direct_io_; }
+  int GetFD() const { return fd_; }
   virtual size_t GetRequiredBufferAlignment() const override {
     return logical_sector_size_;
   }
