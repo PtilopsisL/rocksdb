@@ -302,6 +302,15 @@ void BlobSource::MultiGetBlob(const ReadOptions& read_options,
           return lhs.offset < rhs.offset;
         });
 
+    CacheHandleGuard<BlobFileReader> blob_file_reader;
+    Status s = blob_file_cache_->GetBlobFileReader(file_number, &blob_file_reader);
+    if (!s.ok()) {
+      printf("Error!\n");
+      return;
+    }
+
+    int fd = blob_file_reader.GetValue()->GetFD();
+
     MultiGetBlobFromOneFile(read_options, file_number, file_size,
                             blob_reqs_in_file, &bytes_read_in_file);
 
