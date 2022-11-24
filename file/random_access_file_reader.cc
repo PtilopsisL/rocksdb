@@ -245,6 +245,10 @@ size_t End(const FSReadRequest& r) {
   return static_cast<size_t>(r.offset) + r.len;
 }
 
+size_t End(const FSReadRequestWithFD& r) {
+  return static_cast<size_t>(r.offset) + r.len;
+}
+
 FSReadRequest Align(const FSReadRequest& r, size_t alignment) {
   FSReadRequest req;
   req.offset = static_cast<uint64_t>(
@@ -254,7 +258,29 @@ FSReadRequest Align(const FSReadRequest& r, size_t alignment) {
   return req;
 }
 
+FSReadRequestWithFD Align(const FSReadRequestWithFD& r, size_t alignment) {
+  FSReadRequestWithFD req;
+  req.offset = static_cast<uint64_t>(
+    TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
+  req.len = Roundup(End(r), alignment) - req.offset;
+  req.scratch = nullptr;
+  return req;
+}
+
 bool TryMerge(FSReadRequest* dest, const FSReadRequest& src) {
+  size_t dest_offset = static_cast<size_t>(dest->offset);
+  size_t src_offset = static_cast<size_t>(src.offset);
+  size_t dest_end = End(*dest);
+  size_t src_end = End(src);
+  if (std::max(dest_offset, src_offset) > std::min(dest_end, src_end)) {
+    return false;
+  }
+  dest->offset = static_cast<uint64_t>(std::min(dest_offset, src_offset));
+  dest->len = std::max(dest_end, src_end) - dest->offset;
+  return true;
+}
+
+bool TryMerge(FSReadRequestWithFD* dest, const FSReadRequestWithFD& src) {
   size_t dest_offset = static_cast<size_t>(dest->offset);
   size_t src_offset = static_cast<size_t>(src.offset);
   size_t dest_end = End(*dest);
@@ -381,6 +407,181 @@ IOStatus RandomAccessFileReader::MultiRead(
         }
       }
       io_s = file_->MultiRead(fs_reqs, num_fs_reqs, opts, nullptr);
+      RecordInHistogram(stats_, MULTIGET_IO_BATCH_SIZE, num_fs_reqs);
+    }
+
+#ifndef ROCKSDB_LITE
+    if (use_direct_io()) {
+      // Populate results in the unaligned read requests.
+      size_t aligned_i = 0;
+      for (size_t i = 0; i < num_reqs; i++) {
+        auto& r = read_reqs[i];
+        if (static_cast<size_t>(r.offset) > End(aligned_reqs[aligned_i])) {
+          aligned_i++;
+        }
+        const auto& fs_r = fs_reqs[aligned_i];
+        r.status = fs_r.status;
+        if (r.status.ok()) {
+          uint64_t offset = r.offset - fs_r.offset;
+          if (fs_r.result.size() <= offset) {
+            // No byte in the read range is returned.
+            r.result = Slice();
+          } else {
+            size_t len = std::min(
+                r.len, static_cast<size_t>(fs_r.result.size() - offset));
+            r.result = Slice(fs_r.scratch + offset, len);
+          }
+        } else {
+          r.result = Slice();
+        }
+      }
+    }
+#endif  // ROCKSDB_LITE
+
+    for (size_t i = 0; i < num_reqs; ++i) {
+#ifndef ROCKSDB_LITE
+      if (ShouldNotifyListeners()) {
+        auto finish_ts = FileOperationInfo::FinishNow();
+        NotifyOnFileReadFinish(read_reqs[i].offset, read_reqs[i].result.size(),
+                               start_ts, finish_ts, read_reqs[i].status);
+      }
+      if (!read_reqs[i].status.ok()) {
+        NotifyOnIOError(read_reqs[i].status, FileOperationType::kRead,
+                        file_name(), read_reqs[i].result.size(),
+                        read_reqs[i].offset);
+      }
+
+#endif  // ROCKSDB_LITE
+      RecordIOStats(stats_, file_temperature_, is_last_level_,
+                    read_reqs[i].result.size());
+    }
+    SetPerfLevel(prev_perf_level);
+  }
+  if (stats_ != nullptr && file_read_hist_ != nullptr) {
+    file_read_hist_->Add(elapsed);
+  }
+
+  return io_s;
+}
+
+IOStatus RandomAccessFileReader::MultiRead(
+    const IOOptions& opts, FSReadRequestWithFD* read_reqs, size_t num_reqs,
+    AlignedBuf* aligned_buf, Env::IOPriority rate_limiter_priority) const {
+  (void)aligned_buf;  // suppress warning of unused variable in LITE mode
+  assert(num_reqs > 0);
+
+#ifndef NDEBUG
+  for (size_t i = 0; i < num_reqs - 1; ++i) {
+    assert(read_reqs[i].offset <= read_reqs[i + 1].offset);
+  }
+#endif  // !NDEBUG
+
+  // To be paranoid modify scratch a little bit, so in case underlying
+  // FileSystem doesn't fill the buffer but return success and `scratch` returns
+  // contains a previous block, returned value will not pass checksum.
+  // This byte might not change anything for direct I/O case, but it's OK.
+  for (size_t i = 0; i < num_reqs; i++) {
+    FSReadRequestWithFD& r = read_reqs[i];
+    if (r.len > 0 && r.scratch != nullptr) {
+      r.scratch[0]++;
+    }
+  }
+
+  IOStatus io_s;
+  uint64_t elapsed = 0;
+  {
+    StopWatch sw(clock_, stats_, hist_type_,
+                 (stats_ != nullptr) ? &elapsed : nullptr, true /*overwrite*/,
+                 true /*delay_enabled*/);
+    auto prev_perf_level = GetPerfLevel();
+    IOSTATS_TIMER_GUARD(read_nanos);
+
+    FSReadRequestWithFD* fs_reqs = read_reqs;
+    size_t num_fs_reqs = num_reqs;
+#ifndef ROCKSDB_LITE
+    std::vector<FSReadRequestWithFD> aligned_reqs;
+    if (use_direct_io()) {
+      // num_reqs is the max possible size,
+      // this can reduce std::vecector's internal resize operations.
+      aligned_reqs.reserve(num_reqs);
+      // Align and merge the read requests.
+      size_t alignment = file_->GetRequiredBufferAlignment();
+      for (size_t i = 0; i < num_reqs; i++) {
+        const auto& r = Align(read_reqs[i], alignment);
+        if (i == 0) {
+          // head
+          aligned_reqs.push_back(r);
+
+        } else if (!TryMerge(&aligned_reqs.back(), r)) {
+          // head + n
+          aligned_reqs.push_back(r);
+
+        } else {
+          // unused
+          r.status.PermitUncheckedError();
+        }
+      }
+      TEST_SYNC_POINT_CALLBACK("RandomAccessFileReader::MultiRead:AlignedReqs",
+                               &aligned_reqs);
+
+      // Allocate aligned buffer and let scratch buffers point to it.
+      size_t total_len = 0;
+      for (const auto& r : aligned_reqs) {
+        total_len += r.len;
+      }
+      AlignedBuffer buf;
+      buf.Alignment(alignment);
+      buf.AllocateNewBuffer(total_len);
+      char* scratch = buf.BufferStart();
+      for (auto& r : aligned_reqs) {
+        r.scratch = scratch;
+        scratch += r.len;
+      }
+
+      aligned_buf->reset(buf.Release());
+      fs_reqs = aligned_reqs.data();
+      num_fs_reqs = aligned_reqs.size();
+    }
+#endif  // ROCKSDB_LITE
+
+#ifndef ROCKSDB_LITE
+    FileOperationInfo::StartTimePoint start_ts;
+    if (ShouldNotifyListeners()) {
+      start_ts = FileOperationInfo::StartNow();
+    }
+#endif  // ROCKSDB_LITE
+
+    {
+      IOSTATS_CPU_TIMER_GUARD(cpu_read_nanos, clock_);
+      if (rate_limiter_priority != Env::IO_TOTAL && rate_limiter_ != nullptr) {
+        // TODO: ideally we should call `RateLimiter::RequestToken()` for
+        // allowed bytes to multi-read and then consume those bytes by
+        // satisfying as many requests in `MultiRead()` as possible, instead of
+        // what we do here, which can cause burst when the
+        // `total_multi_read_size` is big.
+        size_t total_multi_read_size = 0;
+        assert(fs_reqs != nullptr);
+        for (size_t i = 0; i < num_fs_reqs; ++i) {
+          FSReadRequestWithFD& req = fs_reqs[i];
+          total_multi_read_size += req.len;
+        }
+        size_t remaining_bytes = total_multi_read_size;
+        size_t request_bytes = 0;
+        while (remaining_bytes > 0) {
+          request_bytes = std::min(
+              static_cast<size_t>(rate_limiter_->GetSingleBurstBytes()),
+              remaining_bytes);
+          rate_limiter_->Request(request_bytes, rate_limiter_priority,
+                                 nullptr /* stats */,
+                                 RateLimiter::OpType::kRead);
+          remaining_bytes -= request_bytes;
+        }
+      }
+      auto random_access_file = dynamic_cast<PosixRandomAccessFile*>(file_.get());
+      if (random_access_file == nullptr) {
+        return IOStatus::IOError("Not a PosixRandomAccessFile");
+      }
+      io_s = random_access_file->MultiRead(fs_reqs, num_fs_reqs, opts, nullptr);
       RecordInHistogram(stats_, MULTIGET_IO_BATCH_SIZE, num_fs_reqs);
     }
 

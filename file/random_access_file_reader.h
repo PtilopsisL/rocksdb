@@ -192,6 +192,10 @@ class RandomAccessFileReader {
   IOStatus MultiRead(const IOOptions& opts, FSReadRequest* reqs,
                      size_t num_reqs, AlignedBuf* aligned_buf,
                      Env::IOPriority rate_limiter_priority) const;
+  
+  IOStatus MultiRead(const IOOptions& opts, FSReadRequestWithFD* reqs,
+                     size_t num_reqs, AlignedBuf* aligned_buf,
+                     Env::IOPriority rate_limiter_priority) const;
 
   IOStatus Prefetch(uint64_t offset, size_t n,
                     const Env::IOPriority rate_limiter_priority) const {
