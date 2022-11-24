@@ -151,6 +151,61 @@ inline void UpdateResult(struct io_uring_cqe* cqe, const std::string& file_name,
   (void)len;
 #endif
 }
+
+inline void UpdateResult(struct io_uring_cqe* cqe, const std::string& file_name,
+                         size_t len, size_t iov_len, bool async_read,
+                         bool use_direct_io, size_t alignment,
+                         size_t& finished_len, FSReadRequestWithFD* req,
+                         size_t& bytes_read, bool& read_again) {
+  read_again = false;
+  if (cqe->res < 0) {
+    req->result = Slice(req->scratch, 0);
+    req->status = IOError("Req failed", file_name, cqe->res);
+  } else {
+    bytes_read = static_cast<size_t>(cqe->res);
+    TEST_SYNC_POINT_CALLBACK("UpdateResults::io_uring_result", &bytes_read);
+    if (bytes_read == iov_len) {
+      req->result = Slice(req->scratch, req->len);
+      req->status = IOStatus::OK();
+    } else if (bytes_read == 0) {
+      /// cqe->res == 0 can means EOF, or can mean partial results. See
+      // comment
+      // https://github.com/facebook/rocksdb/pull/6441#issuecomment-589843435
+      // Fall back to pread in this case.
+      if (use_direct_io && !IsSectorAligned(finished_len, alignment)) {
+        // Bytes reads don't fill sectors. Should only happen at the end
+        // of the file.
+        req->result = Slice(req->scratch, finished_len);
+        req->status = IOStatus::OK();
+      } else {
+        if (async_read) {
+          // No  bytes read. It can means EOF. In case of partial results, it's
+          // caller responsibility to call read/readasync again.
+          req->result = Slice(req->scratch, 0);
+          req->status = IOStatus::OK();
+        } else {
+          read_again = true;
+        }
+      }
+    } else if (bytes_read < iov_len) {
+      assert(bytes_read > 0);
+      if (async_read) {
+        req->result = Slice(req->scratch, bytes_read);
+        req->status = IOStatus::OK();
+      } else {
+        assert(bytes_read + finished_len < len);
+        finished_len += bytes_read;
+      }
+    } else {
+      req->result = Slice(req->scratch, 0);
+      req->status = IOError("Req returned more bytes than requested", file_name,
+                            cqe->res);
+    }
+  }
+#ifdef NDEBUG
+  (void)len;
+#endif
+}
 #endif
 
 #ifdef OS_LINUX
@@ -300,6 +355,12 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
   virtual IOStatus MultiRead(FSReadRequest* reqs, size_t num_reqs,
                              const IOOptions& options,
                              IODebugContext* dbg) override;
+
+#if defined(ROCKSDB_IOURING_PRESENT)
+  IOStatus MultiRead(FSReadRequestWithFD* reqs, size_t num_reqs,
+                             const IOOptions& options,
+                             IODebugContext* dbg);
+#endif
 
   virtual IOStatus Prefetch(uint64_t offset, size_t n, const IOOptions& opts,
                             IODebugContext* dbg) override;

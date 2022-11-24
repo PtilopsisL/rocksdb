@@ -775,6 +775,178 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
 #endif
 }
 
+#if defined(ROCKSDB_IOURING_PRESENT)
+IOStatus PosixRandomAccessFile::MultiRead(FSReadRequestWithFD* reqs,
+                                          size_t num_reqs,
+                                          const IOOptions& options,
+                                          IODebugContext* dbg) {
+  if (use_direct_io()) {
+    for (size_t i = 0; i < num_reqs; i++) {
+      assert(IsSectorAligned(reqs[i].offset, GetRequiredBufferAlignment()));
+      assert(IsSectorAligned(reqs[i].len, GetRequiredBufferAlignment()));
+      assert(IsSectorAligned(reqs[i].scratch, GetRequiredBufferAlignment()));
+    }
+  }
+
+  struct io_uring* iu = nullptr;
+  if (thread_local_io_urings_) {
+    iu = static_cast<struct io_uring*>(thread_local_io_urings_->Get());
+    if (iu == nullptr) {
+      iu = CreateIOUring();
+      if (iu != nullptr) {
+        thread_local_io_urings_->Reset(iu);
+      }
+    }
+  }
+
+  // Init failed, platform doesn't support io_uring. Fall back to
+  // serialized reads
+  if (iu == nullptr) {
+    return IOStatus::IOError("Cannot initialize io_uring");
+  }
+
+  IOStatus ios = IOStatus::OK();
+
+  struct WrappedReadRequest {
+    FSReadRequestWithFD* req;
+    struct iovec iov;
+    size_t finished_len;
+    explicit WrappedReadRequest(FSReadRequestWithFD* r) : req(r), finished_len(0) {}
+  };
+
+  autovector<WrappedReadRequest, 32> req_wraps;
+  autovector<WrappedReadRequest*, 4> incomplete_rq_list;
+  std::unordered_set<WrappedReadRequest*> wrap_cache;
+
+  for (size_t i = 0; i < num_reqs; i++) {
+    req_wraps.emplace_back(&reqs[i]);
+  }
+
+  size_t reqs_off = 0;
+  while (num_reqs > reqs_off || !incomplete_rq_list.empty()) {
+    size_t this_reqs = (num_reqs - reqs_off) + incomplete_rq_list.size();
+
+    // If requests exceed depth, split it into batches
+    if (this_reqs > kIoUringDepth) this_reqs = kIoUringDepth;
+
+    assert(incomplete_rq_list.size() <= this_reqs);
+    for (size_t i = 0; i < this_reqs; i++) {
+      WrappedReadRequest* rep_to_submit;
+      if (i < incomplete_rq_list.size()) {
+        rep_to_submit = incomplete_rq_list[i];
+      } else {
+        rep_to_submit = &req_wraps[reqs_off++];
+      }
+      assert(rep_to_submit->req->len > rep_to_submit->finished_len);
+      rep_to_submit->iov.iov_base =
+          rep_to_submit->req->scratch + rep_to_submit->finished_len;
+      rep_to_submit->iov.iov_len =
+          rep_to_submit->req->len - rep_to_submit->finished_len;
+
+      struct io_uring_sqe* sqe;
+      sqe = io_uring_get_sqe(iu);
+      io_uring_prep_readv(
+          sqe, rep_to_submit->req->fd, &rep_to_submit->iov, 1,
+          rep_to_submit->req->offset + rep_to_submit->finished_len);
+      io_uring_sqe_set_data(sqe, rep_to_submit);
+      wrap_cache.emplace(rep_to_submit);
+    }
+    incomplete_rq_list.clear();
+
+    ssize_t ret =
+        io_uring_submit_and_wait(iu, static_cast<unsigned int>(this_reqs));
+    TEST_SYNC_POINT_CALLBACK(
+        "PosixRandomAccessFile::MultiRead:io_uring_submit_and_wait:return1",
+        &ret);
+    TEST_SYNC_POINT_CALLBACK(
+        "PosixRandomAccessFile::MultiRead:io_uring_submit_and_wait:return2",
+        iu);
+
+    if (static_cast<size_t>(ret) != this_reqs) {
+      fprintf(stderr, "ret = %ld this_reqs: %ld\n", (long)ret, (long)this_reqs);
+      // If error happens and we submitted fewer than expected, it is an
+      // exception case and we don't retry here. We should still consume
+      // what is is submitted in the ring.
+      for (ssize_t i = 0; i < ret; i++) {
+        struct io_uring_cqe* cqe = nullptr;
+        io_uring_wait_cqe(iu, &cqe);
+        if (cqe != nullptr) {
+          io_uring_cqe_seen(iu, cqe);
+        }
+      }
+      return IOStatus::IOError("io_uring_submit_and_wait() requested " +
+                               std::to_string(this_reqs) + " but returned " +
+                               std::to_string(ret));
+    }
+
+    for (size_t i = 0; i < this_reqs; i++) {
+      struct io_uring_cqe* cqe = nullptr;
+      WrappedReadRequest* req_wrap;
+
+      // We could use the peek variant here, but this seems safer in terms
+      // of our initial wait not reaping all completions
+      ret = io_uring_wait_cqe(iu, &cqe);
+      TEST_SYNC_POINT_CALLBACK(
+          "PosixRandomAccessFile::MultiRead:io_uring_wait_cqe:return", &ret);
+      if (ret) {
+        ios = IOStatus::IOError("io_uring_wait_cqe() returns " +
+                                std::to_string(ret));
+
+        if (cqe != nullptr) {
+          io_uring_cqe_seen(iu, cqe);
+        }
+        continue;
+      }
+
+      req_wrap = static_cast<WrappedReadRequest*>(io_uring_cqe_get_data(cqe));
+      // Reset cqe data to catch any stray reuse of it
+      static_cast<struct io_uring_cqe*>(cqe)->user_data = 0xd5d5d5d5d5d5d5d5;
+      // Check that we got a valid unique cqe data
+      auto wrap_check = wrap_cache.find(req_wrap);
+      if (wrap_check == wrap_cache.end()) {
+        fprintf(stderr,
+                "PosixRandomAccessFile::MultiRead: "
+                "Bad cqe data from IO uring - %p\n",
+                req_wrap);
+        port::PrintStack();
+        ios = IOStatus::IOError("io_uring_cqe_get_data() returned " +
+                                std::to_string((uint64_t)req_wrap));
+        continue;
+      }
+      wrap_cache.erase(wrap_check);
+
+      FSReadRequestWithFD* req = req_wrap->req;
+      size_t bytes_read = 0;
+      bool read_again = false;
+      UpdateResult(cqe, filename_, req->len, req_wrap->iov.iov_len,
+                   false /*async_read*/, use_direct_io(),
+                   GetRequiredBufferAlignment(), req_wrap->finished_len, req,
+                   bytes_read, read_again);
+      int32_t res = cqe->res;
+      if (res >= 0) {
+        if (bytes_read == 0) {
+          if (read_again) {
+            Slice tmp_slice;
+            req->status =
+                Read(req->offset + req_wrap->finished_len,
+                     req->len - req_wrap->finished_len, options, &tmp_slice,
+                     req->scratch + req_wrap->finished_len, dbg);
+            req->result =
+                Slice(req->scratch, req_wrap->finished_len + tmp_slice.size());
+          }
+          // else It means EOF so no need to do anything.
+        } else if (bytes_read < req_wrap->iov.iov_len) {
+          incomplete_rq_list.push_back(req_wrap);
+        }
+      }
+      io_uring_cqe_seen(iu, cqe);
+    }
+    wrap_cache.clear();
+  }
+  return ios;
+}
+#endif
+
 IOStatus PosixRandomAccessFile::Prefetch(uint64_t offset, size_t n,
                                          const IOOptions& /*opts*/,
                                          IODebugContext* /*dbg*/) {
