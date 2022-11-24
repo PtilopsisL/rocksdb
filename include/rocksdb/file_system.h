@@ -786,6 +786,42 @@ struct FSReadRequest {
   IOStatus status;
 };
 
+// A read IO request structure for use in MultiRead and asynchronous Read APIs.
+struct FSReadRequestWithFD {
+  // File descriptor
+  int fd;
+
+  // Input parameter that represents the file offset in bytes.
+  uint64_t offset;
+
+  // Input parameter that represents the length to read in bytes. `result` only
+  // returns fewer bytes if end of file is hit (or `status` is not OK).
+  size_t len;
+
+  // A buffer that MultiRead() can optionally place data in. It can
+  // ignore this and allocate its own buffer.
+  // The lifecycle of scratch will be until IO is completed.
+  //
+  // In case of asynchronous reads, its an output parameter and it will be
+  // maintained until callback has been called. Scratch is allocated by RocksDB
+  // and will be passed to underlying FileSystem.
+  char* scratch;
+
+  // Output parameter set by MultiRead() to point to the data buffer, and
+  // the number of valid bytes
+  //
+  // In case of asynchronous reads, this output parameter is set by Async Read
+  // APIs to point to the data buffer, and
+  // the number of valid bytes.
+  // Slice result should point to scratch i.e the data should
+  // always be read into scratch.
+  Slice result;
+
+  // Output parameter set by underlying FileSystem that represents status of
+  // read request.
+  IOStatus status;
+};
+
 // A file abstraction for randomly reading the contents of a file.
 class FSRandomAccessFile {
  public:
