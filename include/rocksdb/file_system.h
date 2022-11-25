@@ -875,6 +875,17 @@ class FSRandomAccessFile {
     return IOStatus::OK();
   }
 
+  IOStatus MultiRead(FSReadRequestWithFD* reqs, size_t num_reqs,
+                             const IOOptions& options, IODebugContext* dbg) {
+    assert(reqs != nullptr);
+    for (size_t i = 0; i < num_reqs; ++i) {
+      FSReadRequestWithFD& req = reqs[i];
+      req.status =
+          Read(req.offset, req.len, options, &req.result, req.scratch, dbg);
+    }
+    return IOStatus::OK();
+  }
+
   // Tries to get an unique ID for this file that will be the same each time
   // the file is opened (and will stay the same while the file is open).
   // Furthermore, it tries to make this ID at most "max_size" bytes. If such an
