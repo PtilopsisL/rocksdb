@@ -260,6 +260,7 @@ FSReadRequest Align(const FSReadRequest& r, size_t alignment) {
 
 FSReadRequestWithFD Align(const FSReadRequestWithFD& r, size_t alignment) {
   FSReadRequestWithFD req;
+  req.fd = r.fd;
   req.offset = static_cast<uint64_t>(
     TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
   req.len = Roundup(End(r), alignment) - req.offset;
