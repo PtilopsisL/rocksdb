@@ -472,7 +472,7 @@ IOStatus RandomAccessFileReader::MultiRead(
 
 #ifndef NDEBUG
   for (size_t i = 0; i < num_reqs - 1; ++i) {
-    assert(read_reqs[i].offset <= read_reqs[i + 1].offset);
+    // assert(read_reqs[i].offset <= read_reqs[i + 1].offset);
   }
 #endif  // !NDEBUG
 

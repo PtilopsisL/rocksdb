@@ -294,6 +294,9 @@ void BlobSource::MultiGetBlob(const ReadOptions& read_options,
   uint64_t total_bytes_read = 0;
   uint64_t bytes_read_in_file = 0;
 
+  std::vector<BlobReadRequestWithFD> blob_reqs_fd;
+  uint64_t last_file_number;
+
   for (auto& [file_number, file_size, blob_reqs_in_file] : blob_reqs) {
     // sort blob_reqs_in_file by file offset.
     std::sort(
@@ -311,14 +314,47 @@ void BlobSource::MultiGetBlob(const ReadOptions& read_options,
 
     int fd = blob_file_reader.GetValue()->GetFD();
 
-    MultiGetBlobFromOneFile(read_options, file_number, file_size,
-                            blob_reqs_in_file, &bytes_read_in_file);
+    // MultiGetBlobFromOneFile(read_options, file_number, file_size,
+    //                         blob_reqs_in_file, &bytes_read_in_file);
 
-    total_bytes_read += bytes_read_in_file;
+    for (auto& req : blob_reqs_in_file) {
+      blob_reqs_fd.emplace_back(fd, *(req.user_key), req.offset, req.len, req.compression, req.result, req.status);
+    }
+
+    last_file_number = file_number;
+  
+    // total_bytes_read += bytes_read_in_file;
+  }
+
+  autovector<std::pair<BlobReadRequestWithFD*, std::unique_ptr<BlobContents>>>
+        _blob_reqs;
+  uint64_t _bytes_read = 0;
+
+  size_t num_blobs = blob_reqs_fd.size();
+  for (size_t i = 0; i < num_blobs; ++i) {
+    _blob_reqs.emplace_back(&blob_reqs_fd[i], std::unique_ptr<BlobContents>());
+  }
+
+  CacheHandleGuard<BlobFileReader> blob_file_reader;
+  Status s = blob_file_cache_->GetBlobFileReader(last_file_number, &blob_file_reader);
+  if (!s.ok()) {
+    printf("Error!\n");
+    return;
+  }
+
+  blob_file_reader.GetValue()->MultiGetBlob(read_options, nullptr,
+                                            _blob_reqs, &_bytes_read);
+  
+  for (auto& [req, blob_contents] : _blob_reqs) {
+    assert(req);
+
+    if (req->status->ok()) {
+      PinOwnedBlob(&blob_contents, req->result);
+    }
   }
 
   if (bytes_read) {
-    *bytes_read = total_bytes_read;
+    *bytes_read = _bytes_read;
   }
 }
 

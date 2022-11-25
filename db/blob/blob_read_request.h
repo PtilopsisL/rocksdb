@@ -51,6 +51,47 @@ struct BlobReadRequest {
   BlobReadRequest& operator=(const BlobReadRequest& other) = default;
 };
 
+// A read Blob request structure for use in BlobSource::MultiGetBlob and
+// BlobFileReader::MultiGetBlob.
+struct BlobReadRequestWithFD {
+  // File descriptor
+  int fd;
+
+  // User key to lookup the paired blob
+  const Slice* user_key = nullptr;
+
+  // File offset in bytes
+  uint64_t offset = 0;
+
+  // Length to read in bytes
+  size_t len = 0;
+
+  // Blob compression type
+  CompressionType compression = kNoCompression;
+
+  // Output parameter set by MultiGetBlob() to point to the data buffer, and
+  // the number of valid bytes
+  PinnableSlice* result = nullptr;
+
+  // Status of read
+  Status* status = nullptr;
+
+  BlobReadRequestWithFD(int _fd, const Slice& _user_key, uint64_t _offset, size_t _len,
+                  CompressionType _compression, PinnableSlice* _result,
+                  Status* _status)
+      : fd(_fd),
+        user_key(&_user_key),
+        offset(_offset),
+        len(_len),
+        compression(_compression),
+        result(_result),
+        status(_status) {}
+
+  BlobReadRequestWithFD() = default;
+  BlobReadRequestWithFD(const BlobReadRequestWithFD& other) = default;
+  BlobReadRequestWithFD& operator=(const BlobReadRequestWithFD& other) = default;
+};
+
 using BlobFileReadRequests =
     std::tuple<uint64_t /* file_number */, uint64_t /* file_size */,
                autovector<BlobReadRequest>>;

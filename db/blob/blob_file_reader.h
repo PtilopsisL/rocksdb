@@ -56,6 +56,12 @@ class BlobFileReader {
           blob_reqs,
       uint64_t* bytes_read) const;
 
+  void MultiGetBlob(
+      const ReadOptions& read_options, MemoryAllocator* allocator,
+      autovector<std::pair<BlobReadRequestWithFD*, std::unique_ptr<BlobContents>>>&
+          blob_reqs,
+      uint64_t* bytes_read) const;
+
   CompressionType GetCompressionType() const { return compression_type_; }
 
   uint64_t GetFileSize() const { return file_size_; }
