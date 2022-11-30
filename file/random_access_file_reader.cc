@@ -282,6 +282,9 @@ bool TryMerge(FSReadRequest* dest, const FSReadRequest& src) {
 }
 
 bool TryMerge(FSReadRequestWithFD* dest, const FSReadRequestWithFD& src) {
+  if (dest->fd != src.fd) {
+    return false;
+  }
   size_t dest_offset = static_cast<size_t>(dest->offset);
   size_t src_offset = static_cast<size_t>(src.offset);
   size_t dest_end = End(*dest);
@@ -592,7 +595,7 @@ IOStatus RandomAccessFileReader::MultiRead(
       size_t aligned_i = 0;
       for (size_t i = 0; i < num_reqs; i++) {
         auto& r = read_reqs[i];
-        if (static_cast<size_t>(r.offset) > End(aligned_reqs[aligned_i])) {
+        if (static_cast<size_t>(r.offset) > End(aligned_reqs[aligned_i]) || r.fd != aligned_reqs[aligned_i].fd) {
           aligned_i++;
         }
         const auto& fs_r = fs_reqs[aligned_i];
