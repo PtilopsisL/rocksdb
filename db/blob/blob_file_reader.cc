@@ -547,10 +547,10 @@ void BlobFileReader::MultiGetBlob(
     const uint64_t offset = req->offset;
     const uint64_t value_size = req->len;
 
-    if (!IsValidBlobOffset(offset, key_size, value_size, file_size_)) {
-      *req->status = Status::Corruption("Invalid blob offset");
-      continue;
-    }
+    // if (!IsValidBlobOffset(offset, key_size, value_size, file_size_)) {
+    //   *req->status = Status::Corruption("Invalid blob offset");
+    //   continue;
+    // }
     if (req->compression != compression_type_) {
       *req->status =
           Status::Corruption("Compression type mismatch when reading a blob");
@@ -571,6 +571,8 @@ void BlobFileReader::MultiGetBlob(
     read_reqs.emplace_back(read_req);
     total_len += read_req.len;
   }
+
+  assert(adjustments.size() == num_blobs);
 
   RecordTick(statistics_, BLOB_DB_BLOB_FILE_BYTES_READ, total_len);
 
