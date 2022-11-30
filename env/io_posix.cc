@@ -601,6 +601,47 @@ IOStatus PosixRandomAccessFile::Read(uint64_t offset, size_t n,
   return s;
 }
 
+IOStatus PosixRandomAccessFile::Read(uint64_t offset, size_t n, int fd,
+                                     const IOOptions& /*opts*/, Slice* result,
+                                     char* scratch,
+                                     IODebugContext* /*dbg*/) const {
+  if (use_direct_io()) {
+    assert(IsSectorAligned(offset, GetRequiredBufferAlignment()));
+    assert(IsSectorAligned(n, GetRequiredBufferAlignment()));
+    assert(IsSectorAligned(scratch, GetRequiredBufferAlignment()));
+  }
+  IOStatus s;
+  ssize_t r = -1;
+  size_t left = n;
+  char* ptr = scratch;
+  while (left > 0) {
+    r = pread(fd, ptr, left, static_cast<off_t>(offset));
+    if (r <= 0) {
+      if (r == -1 && errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    ptr += r;
+    offset += r;
+    left -= r;
+    if (use_direct_io() &&
+        r % static_cast<ssize_t>(GetRequiredBufferAlignment()) != 0) {
+      // Bytes reads don't fill sectors. Should only happen at the end
+      // of the file.
+      break;
+    }
+  }
+  if (r < 0) {
+    // An error: return a non-ok status
+    s = IOError("While pread offset " + std::to_string(offset) + " len " +
+                    std::to_string(n),
+                filename_, errno);
+  }
+  *result = Slice(scratch, (r < 0) ? 0 : n - left);
+  return s;
+}
+
 IOStatus PosixRandomAccessFile::MultiRead(FSReadRequest* reqs,
                                           size_t num_reqs,
                                           const IOOptions& options,
@@ -780,6 +821,14 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequestWithFD* reqs,
                                           size_t num_reqs,
                                           const IOOptions& options,
                                           IODebugContext* dbg) {
+  assert(reqs != nullptr);
+  for (size_t i = 0; i < num_reqs; ++i) {
+    FSReadRequestWithFD& req = reqs[i];
+    req.status =
+      Read(req.offset, req.len, reqs[i].fd, options, &req.result, req.scratch, dbg);
+  }
+  return IOStatus::OK();
+
   if (use_direct_io()) {
     for (size_t i = 0; i < num_reqs; i++) {
       assert(IsSectorAligned(reqs[i].offset, GetRequiredBufferAlignment()));
