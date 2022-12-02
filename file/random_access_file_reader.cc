@@ -252,7 +252,7 @@ size_t End(const FSReadRequestWithFD& r) {
 FSReadRequest Align(const FSReadRequest& r, size_t alignment) {
   FSReadRequest req;
   req.offset = static_cast<uint64_t>(
-    TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
+      TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
   req.len = Roundup(End(r), alignment) - req.offset;
   req.scratch = nullptr;
   return req;
@@ -262,7 +262,7 @@ FSReadRequestWithFD Align(const FSReadRequestWithFD& r, size_t alignment) {
   FSReadRequestWithFD req;
   req.fd = r.fd;
   req.offset = static_cast<uint64_t>(
-    TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
+      TruncateToPageBoundary(alignment, static_cast<size_t>(r.offset)));
   req.len = Roundup(End(r), alignment) - req.offset;
   req.scratch = nullptr;
   return req;
@@ -581,7 +581,8 @@ IOStatus RandomAccessFileReader::MultiRead(
           remaining_bytes -= request_bytes;
         }
       }
-      auto random_access_file = dynamic_cast<PosixRandomAccessFile*>(file_.get());
+      auto random_access_file =
+          dynamic_cast<PosixRandomAccessFile*>(file_.get());
       if (random_access_file == nullptr) {
         return IOStatus::IOError("Not a PosixRandomAccessFile");
       }
@@ -595,7 +596,8 @@ IOStatus RandomAccessFileReader::MultiRead(
       size_t aligned_i = 0;
       for (size_t i = 0; i < num_reqs; i++) {
         auto& r = read_reqs[i];
-        if (static_cast<size_t>(r.offset) > End(aligned_reqs[aligned_i]) || r.fd != aligned_reqs[aligned_i].fd) {
+        if (static_cast<size_t>(r.offset) > End(aligned_reqs[aligned_i]) ||
+            r.fd != aligned_reqs[aligned_i].fd) {
           aligned_i++;
         }
         const auto& fs_r = fs_reqs[aligned_i];

@@ -351,9 +351,9 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
   virtual IOStatus Read(uint64_t offset, size_t n, const IOOptions& opts,
                         Slice* result, char* scratch,
                         IODebugContext* dbg) const override;
-  
-  virtual IOStatus Read(uint64_t offset, size_t n, int fd, const IOOptions& opts,
-                        Slice* result, char* scratch,
+
+  virtual IOStatus Read(uint64_t offset, size_t n, int fd,
+                        const IOOptions& opts, Slice* result, char* scratch,
                         IODebugContext* dbg) const;
 
   virtual IOStatus MultiRead(FSReadRequest* reqs, size_t num_reqs,
@@ -362,8 +362,7 @@ class PosixRandomAccessFile : public FSRandomAccessFile {
 
 #if defined(ROCKSDB_IOURING_PRESENT)
   IOStatus MultiRead(FSReadRequestWithFD* reqs, size_t num_reqs,
-                             const IOOptions& options,
-                             IODebugContext* dbg);
+                     const IOOptions& options, IODebugContext* dbg);
 #endif
 
   virtual IOStatus Prefetch(uint64_t offset, size_t n, const IOOptions& opts,

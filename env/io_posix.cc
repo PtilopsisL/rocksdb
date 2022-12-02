@@ -852,7 +852,8 @@ IOStatus PosixRandomAccessFile::MultiRead(FSReadRequestWithFD* reqs,
     FSReadRequestWithFD* req;
     struct iovec iov;
     size_t finished_len;
-    explicit WrappedReadRequest(FSReadRequestWithFD* r) : req(r), finished_len(0) {}
+    explicit WrappedReadRequest(FSReadRequestWithFD* r)
+        : req(r), finished_len(0) {}
   };
 
   autovector<WrappedReadRequest, 32> req_wraps;

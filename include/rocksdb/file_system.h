@@ -876,7 +876,7 @@ class FSRandomAccessFile {
   }
 
   IOStatus MultiRead(FSReadRequestWithFD* reqs, size_t num_reqs,
-                             const IOOptions& options, IODebugContext* dbg) {
+                     const IOOptions& options, IODebugContext* dbg) {
     assert(reqs != nullptr);
     for (size_t i = 0; i < num_reqs; ++i) {
       FSReadRequestWithFD& req = reqs[i];

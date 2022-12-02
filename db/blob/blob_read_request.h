@@ -76,9 +76,9 @@ struct BlobReadRequestWithFD {
   // Status of read
   Status* status = nullptr;
 
-  BlobReadRequestWithFD(int _fd, const Slice& _user_key, uint64_t _offset, size_t _len,
-                  CompressionType _compression, PinnableSlice* _result,
-                  Status* _status)
+  BlobReadRequestWithFD(int _fd, const Slice& _user_key, uint64_t _offset,
+                        size_t _len, CompressionType _compression,
+                        PinnableSlice* _result, Status* _status)
       : fd(_fd),
         user_key(&_user_key),
         offset(_offset),
@@ -89,7 +89,8 @@ struct BlobReadRequestWithFD {
 
   BlobReadRequestWithFD() = default;
   BlobReadRequestWithFD(const BlobReadRequestWithFD& other) = default;
-  BlobReadRequestWithFD& operator=(const BlobReadRequestWithFD& other) = default;
+  BlobReadRequestWithFD& operator=(const BlobReadRequestWithFD& other) =
+      default;
 };
 
 using BlobFileReadRequests =

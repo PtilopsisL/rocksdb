@@ -520,8 +520,8 @@ void BlobFileReader::MultiGetBlob(
 
 void BlobFileReader::MultiGetBlob(
     const ReadOptions& read_options, MemoryAllocator* allocator,
-    autovector<std::pair<BlobReadRequestWithFD*, std::unique_ptr<BlobContents>>>&
-        blob_reqs,
+    autovector<std::pair<BlobReadRequestWithFD*,
+                         std::unique_ptr<BlobContents>>>& blob_reqs,
     uint64_t* bytes_read) const {
   const size_t num_blobs = blob_reqs.size();
   assert(num_blobs > 0);
