@@ -295,7 +295,7 @@ void BlobSource::MultiGetBlob(const ReadOptions& read_options,
   uint64_t bytes_read_in_file = 0;
 
   std::vector<BlobReadRequestWithFD> blob_reqs_fd;
-  uint64_t last_file_number;
+  uint64_t last_file_number = 0;
 
   for (auto& [file_number, file_size, blob_reqs_in_file] : blob_reqs) {
     // sort blob_reqs_in_file by file offset.
